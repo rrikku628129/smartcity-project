@@ -34,6 +34,7 @@ urban_event_prediction/
 │   └── shap_summary.png
 ├── docs/                              # Architecture diagrams, UI screenshots
 ├── requirements.txt
+├── environment.yml
 └── README.md
 ```
 
