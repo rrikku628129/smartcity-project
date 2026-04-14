@@ -1,0 +1,37 @@
+# ── Core Data ──────────────────────────────────────────────────────
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=14.0.0          # parquet file support
+
+# ── Geospatial ─────────────────────────────────────────────────────
+geopandas>=0.14.0
+shapely>=2.0.0
+
+# ── Visualization ──────────────────────────────────────────────────
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# ── Machine Learning ───────────────────────────────────────────────
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+
+# ── NLP / Sentiment ────────────────────────────────────────────────
+transformers>=4.35.0     # BERT/RoBERTa for sentiment
+torch>=2.0.0             # PyTorch backend
+nltk>=3.8.0
+
+# ── Time Series ────────────────────────────────────────────────────
+statsmodels>=0.14.0
+
+# ── Utilities ──────────────────────────────────────────────────────
+requests>=2.31.0         # weather API (Open-Meteo)
+python-dotenv>=1.0.0
+# pathlib is built into Python 3.4+, no install needed
+
+# ── UI / Interface ─────────────────────────────────────────────────
+gradio>=4.0.0            # interactive demo interface
+
+# ── Notebook ───────────────────────────────────────────────────────
+jupyterlab>=4.0.0
+ipykernel>=6.0.0
