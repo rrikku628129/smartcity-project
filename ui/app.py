@@ -1,10 +1,7 @@
 """
-ui/app.py  —  Multimodal Urban Event Prediction
-Gradio interface for interactive taxi demand forecasting.
-
-Run:
-    python ui/app.py
-Then open http://localhost:7860 in your browser.
+ui/app.py — NYC Travel Advisor
+Conversational UI: user chooses taxi or drive, inputs trip details,
+gets prediction on taxi availability OR traffic congestion.
 """
 
 import gradio as gr
@@ -16,299 +13,311 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-# ── Paths (absolute — safe on Windows) ────────────────────────────
+# ── Paths ──────────────────────────────────────────────────────────
 MODELS_DIR = Path(r"C:\Users\86188\urban_event_prediction\models")
-MODEL_PATH = MODELS_DIR / "xgb_demand_model.pkl"
-FEAT_PATH  = MODELS_DIR / "feature_cols.pkl"
-
-# ── Load model ─────────────────────────────────────────────────────
 try:
-    model        = joblib.load(MODEL_PATH)
-    feature_cols = joblib.load(FEAT_PATH)
+    model        = joblib.load(MODELS_DIR / "xgb_demand_model.pkl")
+    feature_cols = joblib.load(MODELS_DIR / "feature_cols.pkl")
     MODEL_LOADED = True
+    FEATURE_IMPORTANCES = {f: float(i) for f, i in
+                           zip(feature_cols, model.feature_importances_)}
     print(f"✅ Model loaded — {len(feature_cols)} features")
 except Exception as e:
     MODEL_LOADED = False
-    model        = None
+    model = None
     feature_cols = []
-    print(f"⚠️  Model not found: {e}\n   Run model_training.ipynb first.")
+    FEATURE_IMPORTANCES = {}
+    print(f"⚠️  Model not found: {e}")
 
 # ── Constants ──────────────────────────────────────────────────────
 LAG_DEFAULTS = {
-    "lag_1h"          : 2800,
-    "lag_24h"         : 2800,
-    "lag_168h"        : 2800,
-    "rolling_3h_mean" : 2800,
-    "rolling_24h_mean": 2800,
-    "avg_fare"        : 18.5,
-    "avg_distance"    : 2.8,
-    "avg_passengers"  : 1.3,
+    "lag_1h": 2800, "lag_24h": 2800, "lag_168h": 2800,
+    "rolling_3h_mean": 2800, "rolling_24h_mean": 2800,
+    "avg_fare": 18.5, "avg_distance": 2.8, "avg_passengers": 1.3,
 }
-
 WEATHER_CODE_MAP = {
-    "Clear / Sunny" : 0,
-    "Partly Cloudy" : 2,
-    "Overcast"      : 3,
-    "Drizzle"       : 51,
-    "Rain"          : 61,
-    "Heavy Rain"    : 63,
-    "Snow"          : 71,
-    "Heavy Snow"    : 75,
-    "Thunderstorm"  : 95,
+    "Clear / Sunny": 0, "Partly Cloudy": 2, "Overcast": 3,
+    "Drizzle": 51, "Rain": 61, "Heavy Rain": 63,
+    "Snow": 71, "Heavy Snow": 75, "Thunderstorm": 95,
 }
-
 BOROUGH_MULTIPLIER = {
-    "Manhattan"    : 1.00,
-    "Brooklyn"     : 0.28,
-    "Queens"       : 0.22,
-    "Bronx"        : 0.08,
-    "Staten Island": 0.03,
+    "Manhattan": 1.00, "Brooklyn": 0.28,
+    "Queens": 0.22, "Bronx": 0.08, "Staten Island": 0.03,
 }
 
-# Pre-compute real feature importances from model
-FEATURE_IMPORTANCES = {}
-if MODEL_LOADED:
-    importances = model.feature_importances_
-    for feat, imp in zip(feature_cols, importances):
-        FEATURE_IMPORTANCES[feat] = float(imp)
+# Taxi availability thresholds (trips/hour for full Manhattan)
+# Scaled by borough multiplier when used
+TAXI_THRESHOLDS = {
+    "Easy to hail"   : (0,    2200),
+    "Moderate wait"  : (2200, 3200),
+    "Hard to hail"   : (3200, float("inf")),
+}
+# Congestion thresholds (same demand proxy, different labels)
+CONGESTION_THRESHOLDS = {
+    "Light traffic"  : (0,    2000),
+    "Moderate traffic": (2000, 3500),
+    "Heavy traffic"  : (3500, float("inf")),
+}
 
-
-def build_row(hour, day_of_week, day, temperature,
-              precipitation, windspeed, weather_label,
-              has_event, sentiment):
-    """Build one feature row matching the training schema."""
-    weather_code = WEATHER_CODE_MAP.get(weather_label, 0)
-    is_weekend   = int(day_of_week >= 5)
-    row = {
-        "hour"             : hour,
-        "day_of_week"      : day_of_week,
-        "day"              : day,
-        "is_weekend"       : is_weekend,
-        "is_rush_am"       : int(7  <= hour <= 9),
-        "is_rush_pm"       : int(17 <= hour <= 19),
-        "is_night"         : int(hour >= 22 or hour <= 5),
-        "hour_sin"         : np.sin(2 * np.pi * hour / 24),
-        "hour_cos"         : np.cos(2 * np.pi * hour / 24),
-        "dow_sin"          : np.sin(2 * np.pi * day_of_week / 7),
-        "dow_cos"          : np.cos(2 * np.pi * day_of_week / 7),
-        "temperature_c"    : temperature,
-        "precipitation_mm" : precipitation,
-        "windspeed_kmh"    : windspeed,
-        "is_raining"       : int(precipitation > 0.5),
-        "is_snowing"       : int(weather_code in [71, 73, 75, 77]),
-        "is_bad_weather"   : int(precipitation > 0.5 or weather_code in [71,73,75,77]),
-        "has_event"        : int(has_event),
-        "sentiment_score"  : sentiment,
+def build_row(hour, dow, temperature, precipitation, windspeed,
+              weather_label, has_event, sentiment=0.0):
+    wc = WEATHER_CODE_MAP.get(weather_label, 0)
+    return {
+        "hour": hour, "day_of_week": dow, "day": 15,
+        "is_weekend": int(dow >= 5),
+        "is_rush_am": int(7 <= hour <= 9),
+        "is_rush_pm": int(17 <= hour <= 19),
+        "is_night": int(hour >= 22 or hour <= 5),
+        "hour_sin": np.sin(2 * np.pi * hour / 24),
+        "hour_cos": np.cos(2 * np.pi * hour / 24),
+        "dow_sin": np.sin(2 * np.pi * dow / 7),
+        "dow_cos": np.cos(2 * np.pi * dow / 7),
+        "temperature_c": temperature,
+        "precipitation_mm": precipitation,
+        "windspeed_kmh": windspeed,
+        "is_raining": int(precipitation > 0.5),
+        "is_snowing": int(wc in [71, 73, 75, 77]),
+        "is_bad_weather": int(precipitation > 0.5 or wc in [71,73,75,77]),
+        "has_event": int(has_event),
+        "sentiment_score": sentiment,
         **LAG_DEFAULTS,
     }
-    return row
+
+def get_prediction(hour, dow, borough, temperature,
+                   precipitation, windspeed, weather_label, has_event):
+    """Return raw predicted trips/hour for given conditions."""
+    row   = build_row(hour, dow, temperature, precipitation,
+                      windspeed, weather_label, has_event)
+    X_in  = pd.DataFrame([row])
+    avail = [c for c in feature_cols if c in X_in.columns]
+    base  = float(model.predict(X_in[avail])[0])
+    mult  = BOROUGH_MULTIPLIER.get(borough, 1.0)
+    return max(0, base * mult), mult
+
+def classify_taxi(demand):
+    for label, (lo, hi) in TAXI_THRESHOLDS.items():
+        if lo <= demand < hi:
+            return label
+    return "Hard to hail"
+
+def classify_congestion(demand):
+    for label, (lo, hi) in CONGESTION_THRESHOLDS.items():
+        if lo <= demand < hi:
+            return label
+    return "Heavy traffic"
+
+def make_forecast_chart(hour, dow, borough, temperature,
+                        precipitation, windspeed, weather_label,
+                        has_event, mode):
+    """Generate 24-hour bar chart coloured by severity."""
+    hours, demands = [], []
+    mult = BOROUGH_MULTIPLIER.get(borough, 1.0)
+    for h in range(24):
+        row  = build_row(h, dow, temperature, precipitation,
+                         windspeed, weather_label, has_event)
+        X_in = pd.DataFrame([row])
+        avail= [c for c in feature_cols if c in X_in.columns]
+        d    = max(0, float(model.predict(X_in[avail])[0]) * mult)
+        hours.append(h)
+        demands.append(d)
+
+    if mode == "taxi":
+        def color(d):
+            if d < 2200: return "#378ADD"
+            if d < 3200: return "#EF9F27"
+            return "#E24B4A"
+        title  = f"Hourly taxi demand — {borough}"
+        ylabel = "Predicted trips/hour"
+        legend = ["Easy (<2200)", "Moderate (2200–3200)", "Hard (>3200)"]
+        lcolors= ["#378ADD", "#EF9F27", "#E24B4A"]
+    else:
+        def color(d):
+            if d < 2000: return "#378ADD"
+            if d < 3500: return "#EF9F27"
+            return "#E24B4A"
+        title  = f"Traffic congestion proxy — {borough}"
+        ylabel = "Taxi volume proxy (trips/hour)"
+        legend = ["Light (<2000)", "Moderate (2000–3500)", "Heavy (>3500)"]
+        lcolors= ["#378ADD", "#EF9F27", "#E24B4A"]
+
+    fig, ax = plt.subplots(figsize=(10, 3.5))
+    bars = ax.bar(hours, demands,
+                  color=[color(d) for d in demands],
+                  edgecolor="white", width=0.75)
+    ax.axvline(hour - 0.5 + 0.375, color="#2C2C2A",
+               linestyle="--", linewidth=1.5, label=f"Selected: {hour:02d}:00")
+
+    # Legend patches
+    from matplotlib.patches import Patch
+    handles = [Patch(color=c, label=l) for c, l in zip(lcolors, legend)]
+    ax.legend(handles=handles, fontsize=8, loc="upper left")
+
+    ax.set_title(title, fontsize=12)
+    ax.set_xlabel("Hour of Day")
+    ax.set_ylabel(ylabel)
+    ax.set_xticks(range(0, 24, 2))
+    ax.grid(axis="y", alpha=0.2)
+    plt.tight_layout()
+    return fig
+
+def find_best_window(demands, mode):
+    """Find the 2-hour window with lowest demand."""
+    min_avg = float("inf")
+    best_h  = 0
+    for h in range(22):
+        avg = (demands[h] + demands[h+1]) / 2
+        if avg < min_avg:
+            min_avg = avg
+            best_h  = h
+    return best_h, min_avg
 
 
-def predict_demand(hour, day_of_week, borough,
-                   temperature, precipitation, windspeed,
-                   weather_condition, has_event, sentiment_score):
-    """Main prediction function called by Gradio."""
+def predict(mode, borough, hour, dow,
+            temperature, precipitation, windspeed,
+            weather_condition, has_event):
 
     if not MODEL_LOADED:
-        return "⚠️  Model not loaded. Run model_training.ipynb first.", None, None
+        return "⚠️ Model not loaded. Run model_training.ipynb first.", None
 
-    day        = 15
-    is_weekend = int(day_of_week >= 5)
-    multiplier = BOROUGH_MULTIPLIER.get(borough, 1.0)
+    demand, mult = get_prediction(hour, dow, borough, temperature,
+                                  precipitation, windspeed,
+                                  weather_condition, has_event)
+    ci_low  = demand * 0.92
+    ci_high = demand * 1.08
+    avg_demand = 2800 * mult
+    pct = (demand - avg_demand) / avg_demand * 100
 
-    # ── Single prediction ──────────────────────────────────────────
-    row  = build_row(hour, day_of_week, day, temperature,
-                     precipitation, windspeed, weather_condition,
-                     has_event, sentiment_score)
-    X_in = pd.DataFrame([row])
-    avail = [c for c in feature_cols if c in X_in.columns]
-    X_in  = X_in[avail]
+    # Pre-compute full day for best-window tip
+    day_demands = []
+    for h in range(24):
+        d, _ = get_prediction(h, dow, borough, temperature,
+                              precipitation, windspeed,
+                              weather_condition, has_event)
+        day_demands.append(d)
+    best_h, best_d = find_best_window(day_demands, mode)
 
-    base_pred  = float(model.predict(X_in)[0])
-    prediction = max(0, base_pred * multiplier)
-    ci_low     = max(0, prediction * 0.92)
-    ci_high    = prediction * 1.08
+    if mode == "Hail a taxi":
+        verdict = classify_taxi(demand)
+        verdict_emoji = {"Easy to hail": "✅", "Moderate wait": "⚠️",
+                         "Hard to hail": "❌"}[verdict]
+        color_word = {"Easy to hail": "green", "Moderate wait": "orange",
+                      "Hard to hail": "red"}[verdict]
 
-    avg      = (2800 if is_weekend == 0 else 2200) * multiplier
-    pct_diff = (prediction - avg) / avg * 100
-    arrow    = "▲" if pct_diff >= 0 else "▼"
+        tip = (f"Best window to hail: **{best_h:02d}:00–{best_h+2:02d}:00** "
+               f"(demand drops to ~{best_d:,.0f} trips/hr)"
+               if verdict != "Easy to hail" else
+               f"Right now is a good time — demand is below average.")
 
-    summary = (
-        f"### Predicted Demand: {prediction:,.0f} trips/hour\n\n"
-        f"**95% CI:** {ci_low:,.0f} – {ci_high:,.0f}\n\n"
-        f"**{arrow} {abs(pct_diff):.1f}%** vs. {borough} average\n\n"
-        f"📍 {borough} &nbsp;|&nbsp; "
-        f"🕐 {hour:02d}:00 &nbsp;|&nbsp; "
-        f"{'🗓️ Weekend' if is_weekend else '💼 Weekday'}"
-    )
+        result = f"""
+## {verdict_emoji} {verdict}
 
-    # ── Plot 1: 24-hour forecast ────────────────────────────────────
-    hours     = list(range(24))
-    day_preds = []
-    for h in hours:
-        r  = build_row(h, day_of_week, day, temperature,
-                       precipitation, windspeed, weather_condition,
-                       has_event, sentiment_score)
-        xr = pd.DataFrame([r])
-        av = [c for c in feature_cols if c in xr.columns]
-        p  = float(model.predict(xr[av])[0]) * multiplier
-        day_preds.append(max(0, p))
+**Predicted taxi demand:** {demand:,.0f} trips/hour
+**95% CI:** {ci_low:,.0f} – {ci_high:,.0f} &nbsp;|&nbsp; {'▲' if pct>=0 else '▼'} {abs(pct):.1f}% vs {borough} average
 
-    fig1, ax1 = plt.subplots(figsize=(9, 3.8))
-    ax1.fill_between(hours,
-                     [p * 0.92 for p in day_preds],
-                     [p * 1.08 for p in day_preds],
-                     alpha=0.18, color="steelblue")
-    ax1.plot(hours, day_preds, color="steelblue", lw=2,
-             marker="o", markersize=4, label="Predicted demand")
-    ax1.axvline(hour, color="coral", ls="--", lw=1.8,
-                label=f"Selected: {hour:02d}:00")
-    ax1.scatter([hour], [prediction], color="coral", zorder=5, s=90)
-    ax1.set_title(f"24-Hour Demand Forecast — {borough}", fontsize=12)
-    ax1.set_xlabel("Hour of Day")
-    ax1.set_ylabel("Estimated Trips")
-    ax1.set_xticks(range(0, 24, 2))
-    ax1.legend(fontsize=9)
-    ax1.grid(axis="y", alpha=0.25)
-    plt.tight_layout()
+---
+**How to read this:**
+High demand = more people competing for taxis = longer wait.
+Low demand = taxis available = easy to hail.
 
-    # ── Plot 2: Real feature importance from model ──────────────────
-    # Group features into interpretable categories
-    group_map = {
-        "hour"            : "Time of Day",
-        "hour_sin"        : "Time of Day",
-        "hour_cos"        : "Time of Day",
-        "is_rush_am"      : "Time of Day",
-        "is_rush_pm"      : "Time of Day",
-        "is_night"        : "Time of Day",
-        "day_of_week"     : "Day of Week",
-        "dow_sin"         : "Day of Week",
-        "dow_cos"         : "Day of Week",
-        "is_weekend"      : "Day of Week",
-        "day"             : "Day of Week",
-        "lag_1h"          : "Lag Features",
-        "lag_24h"         : "Lag Features",
-        "lag_168h"        : "Lag Features",
-        "rolling_3h_mean" : "Lag Features",
-        "rolling_24h_mean": "Lag Features",
-        "temperature_c"   : "Weather",
-        "precipitation_mm": "Weather",
-        "windspeed_kmh"   : "Weather",
-        "is_raining"      : "Weather",
-        "is_snowing"      : "Weather",
-        "is_bad_weather"  : "Weather",
-        "has_event"       : "City Events",
-        "sentiment_score" : "Social Sentiment",
-        "avg_fare"        : "Trip Statistics",
-        "avg_distance"    : "Trip Statistics",
-        "avg_passengers"  : "Trip Statistics",
-    }
+**Tip:** {tip}
 
-    group_importance = {}
-    for feat, imp in FEATURE_IMPORTANCES.items():
-        group = group_map.get(feat, feat)
-        group_importance[group] = group_importance.get(group, 0) + imp
+📍 {borough} &nbsp;|&nbsp; 🕐 {hour:02d}:00 &nbsp;|&nbsp; {'🗓️ Weekend' if dow >= 5 else '💼 Weekday'}
+"""
+        chart_mode = "taxi"
 
-    # Sort and normalize
-    total = sum(group_importance.values()) or 1
-    group_importance = {
-        k: v / total * 100
-        for k, v in sorted(group_importance.items(), key=lambda x: x[1])
-    }
+    else:  # Drive yourself
+        verdict = classify_congestion(demand)
+        verdict_emoji = {"Light traffic": "✅", "Moderate traffic": "⚠️",
+                         "Heavy traffic": "❌"}[verdict]
 
-    fig2, ax2 = plt.subplots(figsize=(7, 3.8))
-    bar_colors = {
-        "Lag Features"    : "#e74c3c",
-        "Time of Day"     : "#3498db",
-        "Day of Week"     : "#2ecc71",
-        "Weather"         : "#9b59b6",
-        "Trip Statistics" : "#f39c12",
-        "City Events"     : "#1abc9c",
-        "Social Sentiment": "#e67e22",
-    }
-    colors_list = [bar_colors.get(k, "#95a5a6") for k in group_importance]
-    bars = ax2.barh(list(group_importance.keys()),
-                    list(group_importance.values()),
-                    color=colors_list, edgecolor="white", height=0.55)
-    for bar, v in zip(bars, group_importance.values()):
-        ax2.text(v + 0.3, bar.get_y() + bar.get_height()/2,
-                 f"{v:.1f}%", va="center", fontsize=9)
-    ax2.set_title("Feature Group Importance (from XGBoost)", fontsize=11)
-    ax2.set_xlabel("Importance (%)")
-    ax2.set_xlim(0, max(group_importance.values()) * 1.2)
-    plt.tight_layout()
+        tip = (f"Suggested departure: **{best_h:02d}:00–{best_h+2:02d}:00** "
+               f"(traffic proxy drops to ~{best_d:,.0f})"
+               if verdict != "Light traffic" else
+               f"Roads should be relatively clear at this time.")
 
-    return summary, fig1, fig2
+        result = f"""
+## {verdict_emoji} {verdict}
+
+**Traffic proxy (taxi volume):** {demand:,.0f} trips/hour
+**95% CI:** {ci_low:,.0f} – {ci_high:,.0f} &nbsp;|&nbsp; {'▲' if pct>=0 else '▼'} {abs(pct):.1f}% vs {borough} average
+
+---
+**How to read this:**
+Taxi volume is used as a proxy for road traffic — when many people hail taxis,
+overall vehicle volume on roads tends to be high too.
+
+**Thresholds:** &lt;2,000/hr = light &nbsp;|&nbsp; 2,000–3,500/hr = moderate &nbsp;|&nbsp; &gt;3,500/hr = heavy
+
+**Tip:** {tip}
+
+📍 {borough} &nbsp;|&nbsp; 🕐 {hour:02d}:00 &nbsp;|&nbsp; {'🗓️ Weekend' if dow >= 5 else '💼 Weekday'}
+"""
+        chart_mode = "drive"
+
+    chart = make_forecast_chart(hour, dow, borough, temperature,
+                                precipitation, windspeed,
+                                weather_condition, has_event, chart_mode)
+    return result, chart
 
 
-# ── Gradio Layout ──────────────────────────────────────────────────
-with gr.Blocks(title="Urban Event Predictor", theme=gr.themes.Soft()) as demo:
+# ── Gradio UI ──────────────────────────────────────────────────────
+with gr.Blocks(title="NYC Travel Advisor", theme=gr.themes.Soft()) as demo:
 
     gr.Markdown(
-        "# 🏙️ Multimodal Urban Event Prediction\n"
-        "Forecast NYC taxi demand using taxi data, weather, social sentiment, and city events."
+        "# 🗽 NYC Travel Advisor\n"
+        "Tell us how you want to travel — we'll predict taxi availability or road congestion."
     )
 
+    # Step 1 — mode
+    gr.Markdown("### Step 1 — How are you traveling?")
+    mode = gr.Radio(
+        choices=["Hail a taxi", "Drive yourself"],
+        value="Hail a taxi",
+        label="Travel mode"
+    )
+
+    # Step 2 — trip details
+    gr.Markdown("### Step 2 — Trip details")
     with gr.Row():
+        borough = gr.Dropdown(
+            choices=list(BOROUGH_MULTIPLIER.keys()),
+            value="Manhattan", label="📍 Borough / Area"
+        )
+        hour = gr.Slider(0, 23, value=18, step=1, label="🕐 Hour of departure")
+        dow  = gr.Slider(0, 6,  value=2,  step=1, label="📅 Day of week (0=Mon · 6=Sun)")
 
-        # ── Left: Inputs ───────────────────────────────────────────
-        with gr.Column(scale=1):
-            gr.Markdown("### 📥 Input Parameters")
+    gr.Markdown("#### Weather conditions")
+    with gr.Row():
+        weather_condition = gr.Dropdown(
+            choices=list(WEATHER_CODE_MAP.keys()),
+            value="Clear / Sunny", label="Weather"
+        )
+        temperature   = gr.Slider(-15, 40, value=5,  step=0.5, label="Temperature (°C)")
+        precipitation = gr.Slider(0,   50, value=0,  step=0.5, label="Precipitation (mm)")
+        windspeed     = gr.Slider(0,   80, value=10, step=1,   label="Wind speed (km/h)")
 
-            borough = gr.Dropdown(
-                choices=list(BOROUGH_MULTIPLIER.keys()),
-                value="Manhattan", label="🗺️ Borough"
-            )
-            with gr.Row():
-                hour        = gr.Slider(0, 23, value=18, step=1,
-                                        label="Hour of Day")
-                day_of_week = gr.Slider(0, 6, value=2, step=1,
-                                        label="Day of Week  (0=Mon · 6=Sun)")
+    has_event = gr.Checkbox(label="Major public event today (concert, parade, etc.)", value=False)
 
-            gr.Markdown("#### 🌦️ Weather Conditions")
-            weather_condition = gr.Dropdown(
-                choices=list(WEATHER_CODE_MAP.keys()),
-                value="Clear / Sunny", label="Weather"
-            )
-            with gr.Row():
-                temperature   = gr.Slider(-15, 40, value=5,  step=0.5,
-                                          label="Temperature (°C)")
-                precipitation = gr.Slider(0,   50, value=0,  step=0.5,
-                                          label="Precipitation (mm)")
-            windspeed = gr.Slider(0, 80, value=10, step=1,
-                                  label="Wind Speed (km/h)")
+    predict_btn = gr.Button("🔮  Get prediction", variant="primary", size="lg")
 
-            gr.Markdown("#### 🎭 City Context")
-            has_event = gr.Checkbox(
-                label="Major Public Event Today", value=False)
-            sentiment_score = gr.Slider(
-                -1.0, 1.0, value=0.0, step=0.05,
-                label="Social Media Sentiment  (−1 Negative · +1 Positive)")
-
-            predict_btn = gr.Button(
-                "🔮  Predict Demand", variant="primary", size="lg")
-
-        # ── Right: Outputs ─────────────────────────────────────────
-        with gr.Column(scale=2):
-            gr.Markdown("### 📊 Prediction Results")
-            prediction_text = gr.Markdown(
-                "*Adjust inputs and click **Predict Demand** to see results.*")
-            with gr.Row():
-                forecast_plot   = gr.Plot(label="24-Hour Demand Forecast")
-                importance_plot = gr.Plot(label="Feature Group Importance")
+    # Step 3 — results
+    gr.Markdown("### Step 3 — Prediction")
+    result_text = gr.Markdown("*Fill in the details above and click **Get prediction**.*")
+    result_chart = gr.Plot(label="24-hour forecast")
 
     predict_btn.click(
-        fn=predict_demand,
-        inputs=[hour, day_of_week, borough,
+        fn=predict,
+        inputs=[mode, borough, hour, dow,
                 temperature, precipitation, windspeed,
-                weather_condition, has_event, sentiment_score],
-        outputs=[prediction_text, forecast_plot, importance_plot]
+                weather_condition, has_event],
+        outputs=[result_text, result_chart]
     )
 
     gr.Markdown(
         "---\n"
-        "**Model:** XGBoost · NYC Yellow Taxi (Jan 2026) · "
-        "Open-Meteo Weather · Reddit/Twitter Sentiment · NYC Special Events"
+        "*Model: XGBoost trained on NYC Yellow Taxi data (Jan 2026) + "
+        "weather + social sentiment + city events. "
+        "Congestion is inferred from taxi demand volume as a proxy.*"
     )
 
 if __name__ == "__main__":
