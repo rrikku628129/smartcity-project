@@ -7,22 +7,28 @@ Predict taxi availability and road congestion in New York City by fusing taxi tr
 
 ## Project Structure
 
-```
+'''
 urban_event_prediction/
 ├── data/                              # Processed outputs (auto-created at runtime)
 │   ├── merged_features_2026_01.csv    # Final merged feature dataset
 │   └── weather_nyc_2026_01.csv        # Cached weather data
 ├── notebooks/
 │   ├── setup.ipynb                    # ← Deliverable 1: EDA and data loading
-│   └── model_training.ipynb           # ← Deliverable 2: Model training and evaluation
+│   ├── model_training.ipynb           # ← Deliverable 2: Model training and evaluation
+│   └── model_training_complete.ipynb  # ← Deliverable 3: Refined training + evaluation
 ├── src/
 │   ├── data_loader.py                 # Data loading utilities
 │   ├── feature_engineering.py         # Feature pipeline
-│   └── sentiment.py                   # Sentiment scoring module
+│   ├── sentiment.py                   # Sentiment scoring module
+│   └── ensemble.py                    # Ensemble model logic (XGB + LGB + RF)
 ├── ui/
-│   └── app.py                         # Gradio web interface (4-page flow)
+│   ├── app.py                         # Gradio web interface (4-page flow)
+│   └── app_streamlit.py               # Streamlit interface (Deliverable 3 improved UI)
 ├── models/                            # Saved model files (auto-created)
 │   ├── xgb_demand_model.pkl           # Trained XGBoost model
+│   ├── lgb_model_v3.pkl               # LightGBM model
+│   ├── rf_model_v3.pkl                # Random Forest model
+│   ├── ensemble_weights.pkl           # Ensemble weights
 │   └── feature_cols.pkl               # Feature column list
 ├── results/                           # All plots and evaluation outputs
 │   ├── model_comparison.png
@@ -31,12 +37,18 @@ urban_event_prediction/
 │   ├── error_analysis.png
 │   ├── predicted_vs_actual.png
 │   ├── training_loss_curve.png
-│   └── shap_summary.png
+│   ├── shap_summary.png
+│   └── feature_importance.png         # Additional feature importance visualization
 ├── docs/                              # Architecture diagrams, UI screenshots
+│   ├── ui1.jpeg                       # UI screenshot (main interface)
+│   ├── ui2.jpeg                       # UI screenshot (sidebar / interaction)
+│   └── screenshot-ui.png              # Additional UI preview
+├── REPORT.pdf                         # ← Deliverable 3 IEEE report (placed at root)
 ├── requirements.txt
 ├── environment.yml
+├── .gitignore                         # Ignore data/models files
 └── README.md
-```
+'''
 
 > **Note:** Raw data files are stored locally and are not committed to the repository.
 > See the Dataset section below for download links.
