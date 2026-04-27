@@ -1,1 +1,33 @@
-new models 
+Model Artifacts Summary
+
+This project includes several trained machine learning models and preprocessing components used in the final ensemble system:
+
+• XGBoost Model (xgb_model_v3.pkl)
+  - Primary gradient boosting model
+  - Provides strong baseline performance and supports SHAP-based interpretability
+
+• LightGBM Model (lgb_model_v3.pkl)
+  - High-efficiency boosting model
+  - Contributes to improved generalization in the ensemble
+
+• Random Forest Model (rf_model_v3.pkl)
+  - Reduces variance and improves robustness
+  - Helps stabilize predictions across different time periods
+
+• Ensemble Weights (ensemble_weights.pkl)
+  - Defines weighted combination:
+    XGBoost (25%), LightGBM (45%), Random Forest (30%)
+
+• Feature Pipeline
+  - feature_cols_v*.pkl: list of selected features
+  - scaler objects: normalize and standardize inputs
+
+• Deep Learning Components (GAT-Transformer)
+  - gat_features.pkl: graph node features
+  - gat_graph_data.pkl: spatial graph structure
+  - gat_feat_scaler.pkl / gat_target_scaler.pkl: scaling
+  - transformer model files: temporal sequence modeling
+
+Note:
+Due to GitHub file size limitations, model artifacts are not uploaded.
+The repository includes code to retrain models or load them locally.
