@@ -7,6 +7,7 @@ Predict taxi availability and road congestion in New York City by fusing taxi tr
 
 ## Project Structure
 
+```
 urban_event_prediction/
 ├── data/                              # Processed outputs (auto-created at runtime)
 │   ├── merged_features_2026_01.csv    # Final merged feature dataset
@@ -47,6 +48,7 @@ urban_event_prediction/
 ├── environment.yml
 ├── .gitignore                         # Ignore data/models files
 └── README.md
+```
 
 > **Note:** Raw data files are stored locally and are not committed to the repository.
 > See the Dataset section below for download links.
